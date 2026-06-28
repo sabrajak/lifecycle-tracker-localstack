@@ -1,0 +1,332 @@
+services:
+  localstack:
+    container_name: "localstack"
+    hostname: localstack
+    restart: unless-stopped
+    # Pinned to 3.8 (last Community release before the 2026.x stream began
+    # enforcing LOCALSTACK_AUTH_TOKEN at startup). dynamodb / sqs / s3 are
+    # all Community features so no token is required at this version. To
+    # move back to :stable, set LOCALSTACK_AUTH_TOKEN via a gitignored
+    # .env file -- never inline the token in this compose file.
+    image: localstack/localstack:3.8
+    networks:
+      - my-docker-network
+    ports:
+      - 4566:4566
+    environment:
+      - LS_LOG=info
+      - EAGER_SERVICE_LOADING=1
+      - LOCALSTACK_HOST=localstack
+      - AWS_DEFAULT_REGION=us-west-2
+      - SERVICES=dynamodb,sqs,s3
+      - AWS_ACCESS_KEY_ID=accesskey
+      - AWS_SECRET_ACCESS_KEY=secretkey
+      - DYNAMODB_SHARE_DB=1
+    volumes:
+      - "${LOCALSTACK_VOLUME_DIR:-./.localstack}:/var/lib/localstack"
+      - "/var/run/docker.sock:/var/run/docker.sock"
+      - "./scripts/aws:/etc/localstack/init/ready.d"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:4566/_localstack/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+
+  lifecycle-tracker-demo-app:
+    container_name: "lifecycle-tracker-demo-app"
+    image: lifecycle-tracker-demo-app
+    platform: linux/amd64
+    build:
+      context: ..
+      dockerfile: lifecycle-tracker-demo-app/Dockerfile
+      args:
+        ARTIFACTORY_USER: ${ARTIFACTORY_USER:-}
+        ARTIFACTORY_API_KEY: ${ARTIFACTORY_API_KEY:-}
+    networks:
+      - my-docker-network
+    ports:
+      - 8082:8082
+    depends_on:
+      localstack:
+        condition: service_healthy
+        restart: true
+      postgres:
+        condition: service_healthy
+        restart: true
+      kafka:
+        condition: service_healthy
+        restart: true
+      # Wait for kafka-init to finish creating the lifecycle-tracking-queue
+      # and callback-queue topics. Without this dependency the producer can
+      # race ahead of topic creation and end up auto-creating a 1-partition
+      # topic on the broker (breaking the consumer group assignment in the
+      # lifecycle-tracker-monitor-app container).
+      kafka-init:
+        condition: service_completed_successfully
+      # Wait for both consumers before lifecycle-tracker-demo-app starts (producers run via exec).
+      lifecycle-tracker-monitor-app:
+        condition: service_healthy
+      lifecycle-tracker-callback-consumer:
+        condition: service_healthy
+    restart: unless-stopped
+    # Keep lifecycle-tracker-demo-app running; run producers manually, e.g.:
+    #   docker compose exec lifecycle-tracker-demo-app python -m examples.monitor_producer_example
+    #   docker compose exec lifecycle-tracker-demo-app python -m examples.callback_producer_example
+    command: ["sh", "-c", "tail -f /dev/null"]
+    environment:
+      - PYTHONUNBUFFERED=1
+      - AWS_DEFAULT_REGION=us-west-2
+      - AWS_REGION=us-west-2
+      - AWS_ENDPOINT_URL=http://localstack:4566
+      - AWS_ACCESS_KEY_ID=accesskey
+      - AWS_SECRET_ACCESS_KEY=secretkey
+      - AWS_ENVIRONMENT=localstack
+      - PG_HOST=postgres
+      - PG_PORT=5432
+      - PG_USER=postgres
+      - PG_PASSWORD=postgres
+      - PG_DATABASE=pin
+      - PG_SSLMODE=disable
+      - APP_LIFECYCLE_TRACKING_QUEUE_TYPE=kafka
+      - KAFKA_BOOTSTRAP_SERVERS=kafka:9092
+      - APP_LIFECYCLE_DB_TYPE=postgres
+      - APP_LIFECYCLE_CALLBACK_HANDLER_ENABLED=false
+      - APP_LIFECYCLE_CALLBACK_THREAD_POOL_SIZE=5
+
+
+  lifecycle-tracker-monitor-app:
+    container_name: "lifecycle-tracker-monitor-app"
+    image: lifecycle-tracker-monitor-app
+    restart: unless-stopped
+    platform: linux/amd64
+    build:
+      context: ..
+      dockerfile: lifecycle-tracker-monitor-app/Dockerfile
+      args:
+        ARTIFACTORY_USER: ${ARTIFACTORY_USER:-}
+        ARTIFACTORY_API_KEY: ${ARTIFACTORY_API_KEY:-}
+    networks:
+      - my-docker-network
+    ports:
+      - 8083:8083
+    depends_on:
+      localstack:
+        condition: service_healthy
+        restart: true
+      postgres:
+        condition: service_healthy
+        restart: true
+      kafka:
+        condition: service_healthy
+        restart: true
+      # Wait for kafka-init to finish creating the lifecycle-tracking-queue
+      # and callback-queue topics before the consumer subscribes. If the
+      # consumer subscribes before the topic exists, kafka-python's
+      # KafkaConsumer can fail to recover the subscription after the topic
+      # is later created, leaving the lifecycle_monitor consumer group
+      # unregistered and the request never completing.
+      kafka-init:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD-SHELL", "grep -q monitor_consumer_example /proc/1/cmdline || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    environment:
+      - AWS_DEFAULT_REGION=us-west-2
+      - AWS_REGION=us-west-2
+      - AWS_ENDPOINT_URL=http://localstack:4566
+      - AWS_ACCESS_KEY_ID=accesskey
+      - AWS_SECRET_ACCESS_KEY=secretkey
+      - AWS_ENVIRONMENT=localstack
+      - PG_HOST=postgres
+      - PG_PORT=5432
+      - PG_USER=postgres
+      - PG_PASSWORD=postgres
+      - PG_DATABASE=pin
+      - PG_SSLMODE=disable
+      - APP_LIFECYCLE_TRACKING_QUEUE_TYPE=kafka
+      - KAFKA_BOOTSTRAP_SERVERS=kafka:9092
+      - APP_LIFECYCLE_DB_TYPE=postgres
+      - APP_LIFECYCLE_CALLBACK_HANDLER_ENABLED=false
+      - APP_LIFECYCLE_CALLBACK_THREAD_POOL_SIZE=5
+
+  lifecycle-tracker-callback-consumer:
+    container_name: "lifecycle-tracker-callback-consumer"
+    image: lifecycle-tracker-callback-consumer
+    restart: unless-stopped
+    platform: linux/amd64
+    build:
+      context: ..
+      dockerfile: lifecycle-tracker-callback-consumer/Dockerfile
+      args:
+        ARTIFACTORY_USER: ${ARTIFACTORY_USER:-}
+        ARTIFACTORY_API_KEY: ${ARTIFACTORY_API_KEY:-}
+    networks:
+      - my-docker-network
+    depends_on:
+      localstack:
+        condition: service_healthy
+        restart: true
+      postgres:
+        condition: service_healthy
+        restart: true
+      kafka:
+        condition: service_healthy
+        restart: true
+      kafka-init:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD-SHELL", "grep -q callback_consumer_example /proc/1/cmdline || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    environment:
+      - AWS_DEFAULT_REGION=us-west-2
+      - AWS_REGION=us-west-2
+      - AWS_ENDPOINT_URL=http://localstack:4566
+      - AWS_ACCESS_KEY_ID=accesskey
+      - AWS_SECRET_ACCESS_KEY=secretkey
+      - AWS_ENVIRONMENT=localstack
+      - PG_HOST=postgres
+      - PG_PORT=5432
+      - PG_USER=postgres
+      - PG_PASSWORD=postgres
+      - PG_DATABASE=pin
+      - PG_SSLMODE=disable
+      - APP_LIFECYCLE_TRACKING_QUEUE_TYPE=kafka
+      - KAFKA_BOOTSTRAP_SERVERS=kafka:9092
+      - APP_LIFECYCLE_DB_TYPE=postgres
+      - APP_LIFECYCLE_CALLBACK_HANDLER_ENABLED=true
+      - APP_LIFECYCLE_CALLBACK_THREAD_POOL_SIZE=5
+
+  # =============================================================================
+  # PostgreSQL Database
+  # =============================================================================
+  postgres:
+    container_name: postgres
+    image: postgres:15
+    restart: unless-stopped
+    ports:
+      - "5432:5432"
+    networks:
+      - my-docker-network
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: pin
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./scripts/db:/docker-entrypoint-initdb.d
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d pin"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # =============================================================================
+  # Zookeeper (Required for Kafka)
+  # =============================================================================
+  zookeeper:
+    container_name: zookeeper
+    image: confluentinc/cp-zookeeper:7.5.0
+    restart: unless-stopped
+    ports:
+      - "2181:2181"
+    networks:
+      - my-docker-network
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+    healthcheck:
+      test: ["CMD", "nc", "-z", "localhost", "2181"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # =============================================================================
+  # Kafka Message Broker
+  # =============================================================================
+  kafka:
+    container_name: kafka
+    image: confluentinc/cp-kafka:7.5.0
+    restart: unless-stopped
+    ports:
+      - "9092:9092"
+      - "29092:29092"
+    networks:
+      - my-docker-network
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092,PLAINTEXT_HOST://localhost:29092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+    depends_on:
+      zookeeper:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "kafka-broker-api-versions", "--bootstrap-server", "localhost:9092"]
+      interval: 10s
+      timeout: 10s
+      retries: 5
+
+  # =============================================================================
+  # Kafka UI (Optional - for debugging)
+  # =============================================================================
+  kafka-ui:
+    container_name: kafka-ui
+    image: provectuslabs/kafka-ui:latest
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    networks:
+      - my-docker-network
+    environment:
+      KAFKA_CLUSTERS_0_NAME: local
+      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:9092
+      KAFKA_CLUSTERS_0_ZOOKEEPER: zookeeper:2181
+    depends_on:
+      kafka:
+        condition: service_healthy
+
+  # =============================================================================
+  # Kafka Topic Initialization
+  # =============================================================================
+  kafka-init:
+    container_name: kafka-init
+    image: confluentinc/cp-kafka:7.5.0
+    networks:
+      - my-docker-network
+    depends_on:
+      kafka:
+        condition: service_healthy
+    entrypoint: [ "/bin/sh", "-c" ]
+    command: |
+      "
+      echo 'Waiting for Kafka to be ready...'
+      sleep 10
+
+      echo 'Creating Kafka topics...'
+      kafka-topics --bootstrap-server kafka:9092 --create --if-not-exists --topic lifecycle-tracking-queue --partitions 3 --replication-factor 1
+      kafka-topics --bootstrap-server kafka:9092 --create --if-not-exists --topic callback-queue --partitions 3 --replication-factor 1
+
+      echo 'Listing topics:'
+      kafka-topics --bootstrap-server kafka:9092 --list
+
+      echo 'Kafka initialization complete!'
+      "
+
+
+networks:
+  my-docker-network:
+    name: "my-docker-network"
+
+volumes:
+  postgres_data:
+    name: pin-postgres-data
