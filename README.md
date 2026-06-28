@@ -51,9 +51,20 @@ All commands below run from **`Lifecycle-Tracker/lifecycle-tracker-localstack/`*
 
 ### 1. Build app images
 
+**From JFrog** (requires `ARTIFACTORY_USER` / `ARTIFACTORY_API_KEY` in the same shell):
+
 ```bash
 docker compose build lifecycle-tracker-callback-consumer lifecycle-tracker-monitor-app lifecycle-tracker-demo-app
 ```
+
+**From local `cxp-app-lifecycle-tracking-lib`** (no JFrog — shared `lifecycle-lib` stage in `Dockerfile.app` is built once and cached across all three app images):
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.local-lib.yml build \
+  lifecycle-tracker-callback-consumer lifecycle-tracker-monitor-app lifecycle-tracker-demo-app
+```
+
+Use the same `-f docker-compose.local-lib.yml` flag for `up`, `exec`, and `down`.
 
 ### 2. Start the stack
 
@@ -90,8 +101,13 @@ docker compose exec lifecycle-tracker-demo-app python -m examples.monitor_produc
 # Callback scenarios (handlers in callback-consumer)
 docker compose exec lifecycle-tracker-demo-app python -m examples.callback_producer_example
 
-# Advanced patterns (Example 1 callbacks need callback-consumer logs)
+# Advanced patterns (retry, workflow statuses, deep hierarchy)
 docker compose exec lifecycle-tracker-demo-app python -m examples.advanced_example
+
+# Multi-app handler — PIN, SWC, FBA (Example 6 in callback_producer_example)
+# Or run only Example 6:
+# docker compose exec lifecycle-tracker-demo-app python -c \
+#   "from examples.callback_producer_example import multi_app_handler_producer_example; multi_app_handler_producer_example()"
 
 # Curated demo showcase (4 scenarios)
 docker compose exec lifecycle-tracker-demo-app python -m demo.demo_showcase
@@ -142,11 +158,15 @@ See also: `../cxp-app-lifecycle-tracking-lib/docs/lifecycle-tracker-distributed-
 |---------|------------------|---------------|
 | Basic | `python -m examples.basic_example` | Postgres rows; monitor logs for Example 4 (`track_children`) |
 | Monitor | `python -m examples.monitor_producer_example` | Monitor logs — parent completion |
-| Callbacks | `python -m examples.callback_producer_example` | Callback-consumer logs per `app_name` |
-| Advanced | `python -m examples.advanced_example` | Callback-consumer for Example 1 (`multiple-callbacks-app`) |
+| Callbacks | `python -m examples.callback_producer_example` | Callback-consumer logs — examples 1–6 (`[CALLBACK]`, `[MULTI-APP]` for PIN/SWC/FBA) |
+| Distributed (5a) | included in `callback_producer_example` | `my-service` — `[CALLBACK]` + `[ALERT]` on fail |
+| Advanced | `python -m examples.advanced_example` | Postgres rows — retry, workflow statuses, deep hierarchy (no callbacks) |
+| Multi-app handler | `callback_producer_example` Example 6 (`multi_app_handler_producer_example()`) | Callback-consumer `[MULTI-APP]` logs for `PIN`, `SWC`, `FBA` |
 | Demo showcase | `python -m demo.demo_showcase` | All three services |
 
 Per-example detail: `../lifecycle-tracker-demo-app/src/examples/README.md`
+
+**Canonical source:** `../cxp-app-lifecycle-tracking-lib/examples/` — mirrors in demo-app, callback-consumer, and monitor-app. After editing lib examples, run `python3 lifecycle-tracker-demo-app/scripts/sync_example_mirrors.py`. See `../lifecycle-tracker-demo-app/examples/README.md` for the full index.
 
 ## Switching backends
 

@@ -50,12 +50,8 @@ aws --endpoint-url http://localhost:4566 \
     --queue-name callback-queue-auto-tracking-example
 
 # =============================================================================
-# Per-App Callback Queues — advanced_sqs_example.py
+# Per-App Callback Queues — advanced_example.py
 # =============================================================================
-aws --endpoint-url http://localhost:4566 \
-  sqs create-queue \
-    --queue-name callback-queue-multiple-callbacks-app
-
 aws --endpoint-url http://localhost:4566 \
   sqs create-queue \
     --queue-name callback-queue-error-handling-app
@@ -101,3 +97,16 @@ aws --endpoint-url http://localhost:4566 \
 aws --endpoint-url http://localhost:4566 \
   sqs create-queue \
     --queue-name callback-queue-parent-child-app
+
+# Multi-app handler example — Cisco IQ apps (PIN, SWC, FBA)
+aws --endpoint-url http://localhost:4566 \
+  sqs create-queue \
+    --queue-name callback-queue-PIN
+
+aws --endpoint-url http://localhost:4566 \
+  sqs create-queue \
+    --queue-name callback-queue-SWC
+
+aws --endpoint-url http://localhost:4566 \
+  sqs create-queue \
+    --queue-name callback-queue-FBA
