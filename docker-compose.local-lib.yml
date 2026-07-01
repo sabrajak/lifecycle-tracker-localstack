@@ -1,0 +1,29 @@
+# Overlay for testing unpublished cxp-app-lifecycle-tracking-lib changes locally.
+#
+# Uses Dockerfile.app target `with-lib`. The lifecycle-lib stage is built once and
+# reused from Docker layer cache when building the three app images.
+#
+# Usage (from lifecycle-tracker-localstack/):
+#   docker compose -f docker-compose.yml -f docker-compose.local-lib.yml build
+#   docker compose -f docker-compose.yml -f docker-compose.local-lib.yml up -d
+#
+# No JFrog credentials required.
+
+services:
+  lifecycle-tracker-demo-app:
+    build:
+      target: with-lib
+      args:
+        APP_DIR: lifecycle-tracker-demo-app
+
+  lifecycle-tracker-monitor-app:
+    build:
+      target: with-lib
+      args:
+        APP_DIR: lifecycle-tracker-monitor-app
+
+  lifecycle-tracker-callback-consumer:
+    build:
+      target: with-lib
+      args:
+        APP_DIR: lifecycle-tracker-callback-consumer
